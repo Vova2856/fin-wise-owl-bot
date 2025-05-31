@@ -1,30 +1,28 @@
 from sqlalchemy import create_engine, Column, Integer, String, Float, Date, ForeignKey, BigInteger
 from sqlalchemy.orm import declarative_base, relationship, sessionmaker
-from sqlalchemy.ext.declarative import declared_attr
 from datetime import datetime
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 Base = declarative_base()
 
 class User(Base):
     __tablename__ = 'users'
     
-    id = Column(BigInteger, primary_key=True)  # Telegram user_id
+    id = Column(BigInteger, primary_key=True)
     username = Column(String(64), nullable=True)
     first_name = Column(String(64), nullable=False)
     last_name = Column(String(64), nullable=True)
     language_code = Column(String(8), nullable=True)
     registration_date = Column(Date, default=datetime.now)
     last_activity = Column(Date, default=datetime.now, onupdate=datetime.now)
-    currency = Column(String(3), default='UAH')  # Валюта за замовчуванням
+    currency = Column(String(3), default='UAH')
     
-    # Відносини
-    transactions = relationship("Transaction", back_populates="user")
-    budgets = relationship("Budget", back_populates="user")
-    goals = relationship("Goal", back_populates="user")
-    
-    def __repr__(self):
-        return f"<User(id={self.id}, username='{self.username}')>"
+    transactions = relationship("Transaction", back_populates="user", cascade="all, delete-orphan")
+    budgets = relationship("Budget", back_populates="user", cascade="all, delete-orphan")
+    goals = relationship("Goal", back_populates="user", cascade="all, delete-orphan")
 
 class Transaction(Base):
     __tablename__ = "transactions"
@@ -32,16 +30,12 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True)
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     amount = Column(Float, nullable=False)
+    type = Column(String(16), nullable=False)  # 'income' or 'expense'
     category = Column(String(64), nullable=False)
     description = Column(String(256), nullable=True)
     date = Column(Date, default=datetime.now)
-    created_at = Column(Date, default=datetime.now)
     
-    # Відносини
     user = relationship("User", back_populates="transactions")
-    
-    def __repr__(self):
-        return f"<Transaction(amount={self.amount}, category='{self.category}')>"
 
 class Budget(Base):
     __tablename__ = 'budgets'
@@ -50,15 +44,11 @@ class Budget(Base):
     user_id = Column(BigInteger, ForeignKey('users.id'), nullable=False)
     category = Column(String(64), nullable=False)
     limit = Column(Float, nullable=False)
-    period = Column(String(16), default='monthly')  # monthly, weekly, yearly
+    period = Column(String(16), default='monthly')
     created_at = Column(Date, default=datetime.now)
     updated_at = Column(Date, default=datetime.now, onupdate=datetime.now)
     
-    # Відносини
     user = relationship("User", back_populates="budgets")
-    
-    def __repr__(self):
-        return f"<Budget(category='{self.category}', limit={self.limit})>"
 
 class Goal(Base):
     __tablename__ = "goals"
@@ -68,24 +58,19 @@ class Goal(Base):
     name = Column(String(128), nullable=False)
     target_amount = Column(Float, nullable=False)
     current_amount = Column(Float, default=0.0)
-    deadline = Column(Date, nullable=True)
+    months = Column(Integer, nullable=False)
     created_at = Column(Date, default=datetime.now)
+    description = Column(String(256), nullable=True)
     
-    # Відносини
     user = relationship("User", back_populates="goals")
-    
-    def __repr__(self):
-        return f"<Goal(name='{self.name}', target={self.target_amount})>"
 
-# Підключення до БД
-DB_URL = os.getenv("DB_URL", "sqlite:///finance_bot.db")  # За замовчуванням SQLite
+DB_URL = os.getenv("DB_URL", "sqlite:///finance_bot.db") 
 engine = create_engine(DB_URL)
 Session = sessionmaker(bind=engine)
 
 def init_db():
-    """Ініціалізація бази даних"""
-    Base.metadata.create_all(engine)
-    print("Database tables created successfully.")
-
-if __name__ == "__main__":
-    init_db()
+    try:
+        Base.metadata.create_all(engine)
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error(f"Error creating database tables: {e}", exc_info=True)
