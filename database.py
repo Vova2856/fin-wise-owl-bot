@@ -58,6 +58,7 @@ class Goal(Base):
     name = Column(String(128), nullable=False)
     target_amount = Column(Float, nullable=False)
     current_amount = Column(Float, default=0.0)
+    deposits = Column(Float, default=0.0)  # Нове поле для відстеження внесків
     months = Column(Integer, nullable=False)
     created_at = Column(Date, default=datetime.now)
     description = Column(String(256), nullable=True)

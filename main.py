@@ -10,18 +10,13 @@ from telegram.ext import (
     ConversationHandler
 )
 from dotenv import load_dotenv
-from sqlalchemy.orm import Session # Змінено: імпортуємо Session напряму, не створюємо engine тут
+from sqlalchemy.orm import Session
 from datetime import datetime
-
-# Import the new ai module (assuming it's in a 'handlers' directory)
 import handlers.ai as ai
 import handlers.settings as settings
+from database import init_db, User, Transaction, Budget, Goal, engine, Session as DBSession
+import handlers.transactions as db_transactions
 
-# Import your database and transactions modules
-from database import init_db, User, Transaction, Budget, Goal, engine, Session as DBSession # Імпорт Session як DBSession, щоб уникнути конфлікту імен з telegram.ext
-import handlers.transactions as db_transactions # Перейменовуємо для уникнення конфлікту
-
-# Налаштування логування
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -32,25 +27,19 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Завантаження змінних середовища
 load_dotenv()
 
-# Константи для ConversationHandler
-# Додаємо нові стани для додавання транзакції
-ADD_TRANSACTION_TYPE, ADD_TRANSACTION_AMOUNT, ADD_TRANSACTION_CATEGORY, ADD_TRANSACTION_DESCRIPTION = range(5, 9) # Продовжуємо з 5
-BUDGET_MENU, ADDING_EXPENSE, SETTING_BUDGET, AI_SESSION, GOAL_MENU = range(5) # Старі константи
+ADD_TRANSACTION_TYPE, ADD_TRANSACTION_AMOUNT, ADD_TRANSACTION_CATEGORY, ADD_TRANSACTION_DESCRIPTION = range(5, 9)
+ADD_INCOME_AMOUNT, ADD_INCOME_CATEGORY, ADD_INCOME_DESCRIPTION = range(9, 12)
+BUDGET_MENU, ADDING_EXPENSE, SETTING_BUDGET, AI_SESSION, GOAL_MENU = range(5)
 
-# Ініціалізація бази даних при запуску бота (один раз)
-# ВИДАЛЕНО ручне створення таблиць за допомогою sql_text
-# Тепер це робиться через database.py -> init_db()
 init_db()
 
-# Клавіатури
 def build_main_keyboard():
     keyboard = [
+        [KeyboardButton("➕ Транзакція"), KeyboardButton("💵 Дохід")],
         [KeyboardButton("💰 Бюджет"), KeyboardButton("🤖 AI Поради")],
         [KeyboardButton("🎯 Цілі"), KeyboardButton("📊 Аналіз")],
-        [KeyboardButton("➕ Транзакція"), KeyboardButton("⚙ Налаштування")]
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
@@ -80,15 +69,12 @@ def build_goals_keyboard():
     ]
     return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
 
-# Команди
 async def cmd_start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     username = update.effective_user.username
     first_name = update.effective_user.first_name
     last_name = update.effective_user.last_name
     language_code = update.effective_user.language_code
-
-    # Перевіряємо або створюємо користувача в БД
     await db_transactions.get_or_create_user(user_id, username, first_name, last_name, language_code)
 
     user_first_name = update.effective_user.first_name or "користувачу"
@@ -126,16 +112,13 @@ async def cmd_help(update: Update, context: CallbackContext):
 /advice - Отримати фінансові поради"""
     await update.message.reply_text(help_msg, parse_mode="HTML")
 
-# --- ФУНКЦІОНАЛ ТРАНЗАКЦІЙ ---
-
 async def handle_transaction_start(update: Update, context: CallbackContext):
-    """Початок процесу додавання транзакції: запитуємо тип."""
     user_id = update.effective_user.id
     username = update.effective_user.username
     first_name = update.effective_user.first_name
     last_name = update.effective_user.last_name
     language_code = update.effective_user.language_code
-    await db_transactions.get_or_create_user(user_id, username, first_name, last_name, language_code) # Ensure user exists
+    await db_transactions.get_or_create_user(user_id, username, first_name, last_name, language_code)
 
     await update.message.reply_text(
         "➕ <b>Яку транзакцію ви хочете додати?</b>",
@@ -145,7 +128,6 @@ async def handle_transaction_start(update: Update, context: CallbackContext):
     return ADD_TRANSACTION_TYPE
 
 async def get_transaction_type(update: Update, context: CallbackContext):
-    """Отримуємо тип транзакції (дохід/витрата)."""
     text = update.message.text
     if text.lower() == "дохід":
         context.user_data['transaction_type'] = 'income'
@@ -159,9 +141,8 @@ async def get_transaction_type(update: Update, context: CallbackContext):
     return ADD_TRANSACTION_AMOUNT
 
 async def get_transaction_amount(update: Update, context: CallbackContext):
-    """Отримуємо суму транзакції."""
     try:
-        amount = float(update.message.text.replace(',', '.')) # Дозволяємо кому як десятковий роздільник
+        amount = float(update.message.text.replace(',', '.'))
         if amount <= 0:
             await update.message.reply_text("Сума має бути позитивним числом. Спробуйте ще раз.")
             return ADD_TRANSACTION_AMOUNT
@@ -173,7 +154,6 @@ async def get_transaction_amount(update: Update, context: CallbackContext):
         return ADD_TRANSACTION_AMOUNT
 
 async def get_transaction_category(update: Update, context: CallbackContext):
-    """Отримуємо категорію транзакції."""
     category = update.message.text.strip()
     if not category:
         await update.message.reply_text("Категорія не може бути пустою. Спробуйте ще раз.")
@@ -181,7 +161,6 @@ async def get_transaction_category(update: Update, context: CallbackContext):
     context.user_data['category'] = category
     await update.message.reply_text("Введіть опис транзакції (або 'пропустити', якщо не потрібно):")
     return ADD_TRANSACTION_DESCRIPTION
-
 
 async def get_transaction_description(update: Update, context: CallbackContext):
     description = update.message.text.strip()
@@ -209,14 +188,80 @@ async def get_transaction_description(update: Update, context: CallbackContext):
         reply_text = "❌ Сталася помилка при додаванні транзакції."
 
     await update.message.reply_text(reply_text, reply_markup=build_main_keyboard())
-    
-    # Clear user data
     context.user_data.clear()
     return ConversationHandler.END
 
-# Скасування розмови
+# Новий функціонал для додавання доходу
+async def income_start(update: Update, context: CallbackContext):
+    user_id = update.effective_user.id
+    username = update.effective_user.username
+    first_name = update.effective_user.first_name
+    last_name = update.effective_user.last_name
+    language_code = update.effective_user.language_code
+    await db_transactions.get_or_create_user(user_id, username, first_name, last_name, language_code)
+
+    context.user_data['transaction_type'] = 'income'
+    await update.message.reply_text(
+        "💵 <b>Додавання доходу</b>\n\n"
+        "Введіть суму доходу (наприклад, <code>100.50</code>):",
+        parse_mode="HTML"
+    )
+    return ADD_INCOME_AMOUNT
+
+async def get_income_amount(update: Update, context: CallbackContext):
+    try:
+        amount = float(update.message.text.replace(',', '.'))
+        if amount <= 0:
+            await update.message.reply_text("Сума має бути позитивним числом. Спробуйте ще раз.")
+            return ADD_INCOME_AMOUNT
+        context.user_data['amount'] = amount
+        await update.message.reply_text(
+            "Введіть категорію доходу (наприклад, <code>Зарплата</code>, <code>Фріланс</code>):",
+            parse_mode="HTML"
+        )
+        return ADD_INCOME_CATEGORY
+    except ValueError:
+        await update.message.reply_text("Невірний формат суми. Введіть число, наприклад: <code>100</code> або <code>50.75</code>", parse_mode="HTML")
+        return ADD_INCOME_AMOUNT
+
+async def get_income_category(update: Update, context: CallbackContext):
+    category = update.message.text.strip()
+    if not category:
+        await update.message.reply_text("Категорія не може бути пустою. Спробуйте ще раз.")
+        return ADD_INCOME_CATEGORY
+    context.user_data['category'] = category
+    await update.message.reply_text("Введіть опис доходу (або 'пропустити', якщо не потрібно):")
+    return ADD_INCOME_DESCRIPTION
+
+async def get_income_description(update: Update, context: CallbackContext):
+    description = update.message.text.strip()
+    if description.lower() == 'пропустити':
+        description = None
+
+    user_id = update.effective_user.id
+    amount = context.user_data['amount']
+    category = context.user_data['category']
+
+    success = await db_transactions.add_transaction(
+        user_id=user_id,
+        amount=amount,
+        transaction_type='income',
+        category=category,
+        description=description
+    )
+
+    if success:
+        reply_text = f"✅ Дохід {amount} грн на '{category}' додано!"
+        if description:
+            reply_text += f"\n📝 Опис: {description}"
+    else:
+        reply_text = "❌ Сталася помилка при додаванні доходу."
+
+    await update.message.reply_text(reply_text, reply_markup=build_main_keyboard())
+    context.user_data.clear()
+    return ConversationHandler.END
+
 async def cancel_conversation(update: Update, context: CallbackContext):
-    # Очищаємо всі тимчасові дані користувача, якщо вони є
     context.user_data.clear()
     await update.message.reply_text(
         "Дію скасовано. Головне меню:",
@@ -224,7 +269,6 @@ async def cancel_conversation(update: Update, context: CallbackContext):
     )
     return ConversationHandler.END
 
-# --- Інші обробники ---
 async def handle_settings(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "⚙ <b>Налаштування</b>\nТут ви можете налаштувати свій профіль\n\n"
@@ -235,7 +279,6 @@ async def handle_settings(update: Update, context: CallbackContext):
         parse_mode="HTML"
     )
 
-# AI Поради
 async def handle_ai_advice(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "💡 Напишіть ваше запитання про фінанси:",
@@ -243,7 +286,6 @@ async def handle_ai_advice(update: Update, context: CallbackContext):
     )
     return AI_SESSION
 
-# Бюджет - ConversationHandler
 async def budget_start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -259,7 +301,6 @@ async def budget_start(update: Update, context: CallbackContext):
     )
     return BUDGET_MENU
 
-# Оновлено для використання ORM:
 async def add_expense_start(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "Введіть витрату у форматі:\n<code>100 їжа</code> або <code>200 транспорт обід</code>\n"
@@ -268,7 +309,6 @@ async def add_expense_start(update: Update, context: CallbackContext):
     )
     return ADDING_EXPENSE
 
-# Оновлено для використання ORM:
 async def add_expense(update: Update, context: CallbackContext):
     try:
         user_input = update.message.text
@@ -315,12 +355,11 @@ async def add_expense(update: Update, context: CallbackContext):
             reply_markup=build_budget_keyboard()
         )
         return BUDGET_MENU
-# Оновлено для використання ORM:
+
 async def show_statistics(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     try:
-        # Отримуємо всі транзакції для розрахунку статистики
-        transactions_list = await db_transactions.get_transactions(user_id, limit=9999) # Отримати всі для статистики
+        transactions_list = await db_transactions.get_transactions(user_id, limit=9999)
 
         if not transactions_list:
             await update.message.reply_text(
@@ -329,36 +368,44 @@ async def show_statistics(update: Update, context: CallbackContext):
             )
             return BUDGET_MENU
 
-        # Розділяємо на доходи та витрати для більш точного балансу
         total_income = sum(t.amount for t in transactions_list if t.type == 'income')
         total_expense = sum(t.amount for t in transactions_list if t.type == 'expense')
-        
-        # Розраховуємо загальний баланс за допомогою функції
         current_balance = await db_transactions.get_balance(user_id)
 
-        # Статистика витрат за категоріями для поточного місяця
         monthly_expenses_by_category = {}
+        monthly_income_by_category = {}
         current_month_str = datetime.now().strftime("%Y-%m")
 
         for t in transactions_list:
-            # Перевіряємо, чи транзакція належить до поточного місяця і є витратою
-            if t.date.strftime("%Y-%m") == current_month_str and t.type == 'expense':
-                monthly_expenses_by_category[t.category] = monthly_expenses_by_category.get(t.category, 0.0) + t.amount
+            if t.date.strftime("%Y-%m") == current_month_str:
+                if t.type == 'expense':
+                    monthly_expenses_by_category[t.category] = monthly_expenses_by_category.get(t.category, 0.0) + t.amount
+                elif t.type == 'income':
+                    monthly_income_by_category[t.category] = monthly_income_by_category.get(t.category, 0.0) + t.amount
         
-        # Сортуємо категорії за витратами
-        sorted_categories = sorted(monthly_expenses_by_category.items(), key=lambda item: item[1], reverse=True)
+        sorted_expense_categories = sorted(monthly_expenses_by_category.items(), key=lambda item: item[1], reverse=True)
+        sorted_income_categories = sorted(monthly_income_by_category.items(), key=lambda item: item[1], reverse=True)
         total_monthly_expense = sum(monthly_expenses_by_category.values())
+        total_monthly_income = sum(monthly_income_by_category.values())
 
         message = "📊 <b>Ваша фінансова статистика:</b>\n\n"
         message += f"💰 <b>Поточний баланс:</b> {current_balance:.2f} грн\n"
         message += f"⬆️ <b>Всього доходів:</b> {total_income:.2f} грн\n"
         message += f"⬇️ <b>Всього витрат:</b> {total_expense:.2f} грн\n\n"
         
-        if sorted_categories:
+        if sorted_income_categories:
+            message += f"<b>Доходи за {datetime.now().strftime('%B %Y').capitalize()}:</b>\n"
+            message += f"💵 <b>Загальні доходи цього місяця:</b> {total_monthly_income:.2f} грн\n\n"
+            message += "<b>За категоріями:</b>\n"
+            for category, amount in sorted_income_categories:
+                message += f"▪ {category.capitalize()}: {amount:.2f} грн\n"
+            message += "\n"
+        
+        if sorted_expense_categories:
             message += f"<b>Витрати за {datetime.now().strftime('%B %Y').capitalize()}:</b>\n"
             message += f"💵 <b>Загальні витрати цього місяця:</b> {total_monthly_expense:.2f} грн\n\n"
-            message += "<b>За категоріями цього місяця:</b>\n"
-            for category, amount in sorted_categories:
+            message += "<b>За категоріями:</b>\n"
+            for category, amount in sorted_expense_categories:
                 percentage = (amount / total_monthly_expense) * 100 if total_monthly_expense > 0 else 0
                 message += f"▪ {category.capitalize()}: {amount:.2f} грн ({percentage:.1f}%)\n"
         else:
@@ -379,7 +426,6 @@ async def show_statistics(update: Update, context: CallbackContext):
         )
         return BUDGET_MENU
 
-# Оновлено для використання ORM:
 async def budget_settings_start(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -399,7 +445,6 @@ async def budget_settings_start(update: Update, context: CallbackContext):
     )
     return SETTING_BUDGET
 
-# Оновлено для використання ORM:
 async def handle_budget_settings(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     try:
@@ -410,7 +455,7 @@ async def handle_budget_settings(update: Update, context: CallbackContext):
             return ConversationHandler.END
             
         if user_input.lower() == '/list':
-            session = DBSession() # Використовуємо DBSession з database.py
+            session = DBSession()
             budgets = session.query(Budget).filter_by(user_id=user_id).all()
             session.close()
             
@@ -440,17 +485,14 @@ async def handle_budget_settings(update: Update, context: CallbackContext):
         limit = float(parts[1])
         
         session = DBSession()
-        # Шукаємо існуючий бюджет або створюємо новий
         budget = session.query(Budget).filter_by(user_id=user_id, category=category).first()
         if budget:
             budget.limit = limit
-            session.add(budget) # Оновлюємо існуючий
             action_msg = "оновлено"
         else:
             budget = Budget(user_id=user_id, category=category, limit=limit)
-            session.add(budget) # Додаємо новий
             action_msg = "встановлено"
-
+        session.add(budget)
         session.commit()
         session.close()
         
@@ -474,7 +516,6 @@ async def handle_budget_settings(update: Update, context: CallbackContext):
         )
         return BUDGET_MENU
 
-# Обробник цілей (оновлено для використання ORM)
 async def handle_goals(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     username = update.effective_user.username
@@ -490,7 +531,6 @@ async def handle_goals(update: Update, context: CallbackContext):
     )
     return GOAL_MENU
 
-# Оновлено для використання ORM:
 async def goal_list(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     session = DBSession()
@@ -504,14 +544,14 @@ async def goal_list(update: Update, context: CallbackContext):
         response = "🎯 <b>Ваші цілі:</b>\n\n"
         for goal in goals:
             progress = (goal.current_amount / goal.target_amount) * 100 if goal.target_amount > 0 else 0
-            # Розрахунок місячної суми лише якщо термін у місяцях встановлений і позитивний
             monthly = (goal.target_amount - goal.current_amount) / goal.months if goal.months and goal.months > 0 else 0
             
             response += (
                 f"🆔 <b>ID:</b> {goal.id}\n"
                 f"📌 <b>Назва:</b> {goal.name}\n"
                 f"💵 <b>Ціль:</b> {goal.target_amount} грн\n"
-                f"💰 <b>Накопичено:</b> {goal.current_amount} грн ({progress:.1f}%)\n"
+                f"💳 <b>Внесено:</b> {goal.deposits:.2f} грн\n"
+                f"💰 <b>Накопичено:</b> {goal.current_amount:.2f} грн ({progress:.1f}%)\n"
             )
             if goal.months and goal.months > 0:
                  response += f"📅 <b>Місячна сума:</b> ~{monthly:.2f} грн\n"
@@ -535,106 +575,61 @@ async def goal_list(update: Update, context: CallbackContext):
 async def goal_create_prompt(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "📌 Введіть назву цілі, цільову суму та кількість місяців у форматі:\n"
-        "<code>Назва Сума Місяці [Опис]</code>\n\n" # Додано [Опис] для ясності
-        "Наприклад: <code>Ноутбук 25000 6 для роботи</code>",
+        "<code>Назва Сума Місяці</code>\n\n"
+        "Наприклад: <code>Ноутбук 25000 6</code>",
         parse_mode="HTML"
     )
-    context.user_data['next_state'] = GOAL_MENU # Повертаємось в меню цілей після успішної операції
+    context.user_data['next_state'] = GOAL_MENU
     return "WAITING_GOAL_CREATE"
 
-# Оновлено для використання ORM:
 async def goal_create(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
+    session = DBSession()
     try:
-        args = update.message.text.split()
-        if len(args) < 3:
+        text = update.message.text.strip()
+        tokens = text.split()
+        
+        if len(tokens) < 3:
             await update.message.reply_text(
-                "❌ Неправильний формат. Використовуйте: Назва Сума Місяці [Опис]",
+                "❌ Неправильний формат. Використовуйте: Назва Сума Місяці",
                 reply_markup=build_goals_keyboard()
             )
             return GOAL_MENU
-
-        # Парсинг: останні два - сума та місяці, решта - назва і можливий опис
+            
         try:
-            months = int(args[-1])
-            target_amount = float(args[-2])
-            name_and_desc_parts = args[:-2]
-            name = ' '.join(name_and_desc_parts) # Припускаємо, що все до суми/місяців - це назва+опис
-
-            # Якщо опис має бути окремим полем, і він останній
-            # Це дуже складно парсити без чіткого роздільника.
-            # Якщо ви хочете "Назва Сума Місяці Опис", то логіка має бути такою:
-            # name = ' '.join(args[0:-3])
-            # target_amount = float(args[-3])
-            # months = int(args[-2])
-            # description = args[-1] if len(args) > 3 else None
-            
-            # Для простоти, згідно з вашим прикладом, "для роботи" йде в назву.
-            # Якщо "description" має бути окремим, то треба змінити модель та підхід.
-            # Наразі, description у моделі `Goal` є, але ми його не парсимо окремо.
-            # Щоб парсити опис окремо, треба змінити промпт і логіку.
-            # Наприклад: "Ноутбук 25000 6 #для_роботи" або "Ноутбук,25000,6,для роботи"
-            # Або, якщо опис йде останнім і може містити пробіли:
-            # name = " ".join(args[:-3]) # Якщо опис завжди останній
-            # target_amount = float(args[-3])
-            # months = int(args[-2])
-            # description = args[-1] if len(args) > 3 else None
-            # Або, якщо опис - це все, що після 3-го аргументу:
-            # name = args[0]
-            # target_amount = float(args[1])
-            # months = int(args[2])
-            # description = " ".join(args[3:]) if len(args) > 3 else None
-
-            # З огляду на ваш попередній приклад "Ноутбук 25000 6 для роботи",
-            # де "для роботи" є частиною назви, залишаємо так:
-            # name = ' '.join(args[:-2])
-            # target_amount = float(args[-2])
-            # months = int(args[-1])
-            # description = None # Опис не парситься окремо, або частина назви
-            
-            # Якщо опис має бути окремо, і він може бути багатослівним,
-            # найкраще мати чіткий роздільник або фіксовану кількість полів.
-            # Давайте зробимо опис опціональним і останнім:
-            if len(args) >= 4: # Якщо є опис
-                name = ' '.join(args[:-3])
-                target_amount = float(args[-3])
-                months = int(args[-2])
-                description = args[-1]
-            else: # Без опису
-                name = ' '.join(args[:-2])
-                target_amount = float(args[-2])
-                months = int(args[-1])
-                description = None
-
-        except (ValueError, IndexError):
+            months = int(tokens[-1])
+            target_amount = float(tokens[-2])
+            name = ' '.join(tokens[:-2])
+            description = None
+        except ValueError:
             await update.message.reply_text(
-                "❌ Помилка у форматі даних. Перевірте, що сума та місяці - числа.\n"
-                "Використовуйте: <code>Назва Сума Місяці [Опис]</code>",
-                parse_mode="HTML",
+                "❌ Помилка у форматі даних. Перевірте, що сума та місяці - числа.",
                 reply_markup=build_goals_keyboard()
             )
             return GOAL_MENU
-            
-        session = DBSession()
+
+        if not name:
+            await update.message.reply_text("❌ Назва цілі не може бути пустою", reply_markup=build_goals_keyboard())
+            return GOAL_MENU
+
         goal = Goal(
             user_id=user_id,
             name=name,
             target_amount=target_amount,
             months=months,
-            created_at=datetime.now().date(), # Використовуємо .date() для поля Date
-            description=description
+            created_at=datetime.now().date(),
+            description=description,
+            deposits=0.0
         )
         session.add(goal)
         session.commit()
-        session.close()
 
         reply_text = (
             f"✅ Ціль <b>'{name}'</b> створена!\n"
             f"💵 Сума: <b>{target_amount}</b> грн\n"
-            f"📅 Термін: <b>{months}</b> місяців"
+            f"📅 Термін: <b>{months}</b> місяців\n"
+            f"💳 Стартовий внесок: <b>0.00</b> грн"
         )
-        if description:
-            reply_text += f"\n📝 Опис: {description}"
             
         await update.message.reply_text(
             reply_text,
@@ -650,19 +645,20 @@ async def goal_create(update: Update, context: CallbackContext):
             reply_markup=build_goals_keyboard()
         )
         return GOAL_MENU
+    finally:
+        session.close()
 
-# Оновлено для використання ORM:
 async def goal_add_prompt(update: Update, context: CallbackContext):
     await update.message.reply_text(
-        "💰 Введіть ID цілі та суму для додавання у форматі:\n"
+        "💳 Введіть ID цілі та суму внеску у форматі:\n"
         "<code>ID Сума</code>\n\n"
-        "Наприклад: <code>3 1500</code>",
+        "Наприклад: <code>3 1500</code>\n"
+        "Щоб побачити список цілей, натисніть /list",
         parse_mode="HTML"
     )
-    return "WAITING_GOAL_ADD"
+    return "WAITING_DEPOSIT"
 
-# Оновлено для використання ORM:
-async def goal_add(update: Update, context: CallbackContext):
+async def handle_deposit(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     session = DBSession()
     try:
@@ -672,13 +668,14 @@ async def goal_add(update: Update, context: CallbackContext):
                 "❌ Неправильний формат. Використовуйте: ID Сума",
                 reply_markup=build_goals_keyboard()
             )
-            return GOAL_MENU
+            return "WAITING_DEPOSIT"
 
         goal_id = int(args[0])
         amount = float(args[1])
+        
         if amount <= 0:
-            await update.message.reply_text("Сума для додавання має бути позитивною.", reply_markup=build_goals_keyboard())
-            return GOAL_MENU
+            await update.message.reply_text("❌ Сума внеску має бути більше 0", reply_markup=build_goals_keyboard())
+            return "WAITING_DEPOSIT"
 
         goal = session.query(Goal).filter_by(id=goal_id, user_id=user_id).first()
 
@@ -687,41 +684,31 @@ async def goal_add(update: Update, context: CallbackContext):
                 "❌ Ціль не знайдена",
                 reply_markup=build_goals_keyboard()
             )
-            return GOAL_MENU
+            return "WAITING_DEPOSIT"
 
-        new_amount = goal.current_amount + amount
-        
-        # Додаємо транзакцію типу "income" (або інший, який ви вирішите для внесків у цілі)
+        # Оновлюємо суми цілі
+        goal.deposits += amount
+        goal.current_amount += amount
+        session.commit()
+
+        # Додаємо транзакцію
         await db_transactions.add_transaction(
             user_id=user_id,
             amount=amount,
-            transaction_type='goal_deposit', # Або 'income'
-            category=f"Ціль: {goal.name}", # Категорія для цілі
-            description=f"Внесок у ціль '{goal.name}'"
+            transaction_type='goal_deposit',
+            category=f"Внесок у ціль: {goal.name}",
+            description=f"Додано кошти до цілі '{goal.name}'"
         )
 
-        if new_amount > goal.target_amount:
-            # Якщо додана сума перевищує ціль, встановлюємо її на цільову
-            overflow_amount = new_amount - goal.target_amount
-            goal.current_amount = goal.target_amount
-            session.add(goal)
-            session.commit()
-            await update.message.reply_text(
-                f"✅ Додано <b>{amount - overflow_amount:.2f}</b> грн до цілі <b>'{goal.name}'</b>! Ціль досягнута!\n"
-                f"🎉 Ви успішно накопичили {goal.target_amount} грн. Залишок {overflow_amount:.2f} грн не було додано.",
-                parse_mode="HTML",
-                reply_markup=build_goals_keyboard()
-            )
-            return GOAL_MENU
-            
-        goal.current_amount = new_amount
-        session.add(goal)
-        session.commit()
-
-        remaining = goal.target_amount - new_amount
+        # Розраховуємо прогрес
+        progress = (goal.current_amount / goal.target_amount) * 100
+        remaining = goal.target_amount - goal.current_amount
+        
         await update.message.reply_text(
-            f"✅ Додано <b>{amount}</b> грн до цілі <b>'{goal.name}'</b>!\n"
-            f"💰 Залишилось зібрати: <b>{remaining:.2f}</b> грн",
+            f"✅ Внесено <b>{amount:.2f}</b> грн до цілі <b>'{goal.name}'</b>!\n"
+            f"💰 Загальний внесок: <b>{goal.deposits:.2f}</b> грн\n"
+            f"📈 Прогрес: <b>{progress:.1f}%</b>\n"
+            f"🎯 Залишилось зібрати: <b>{remaining:.2f}</b> грн",
             parse_mode="HTML",
             reply_markup=build_goals_keyboard()
         )
@@ -732,18 +719,17 @@ async def goal_add(update: Update, context: CallbackContext):
             "❌ Помилка у форматі даних. Перевірте, що ID та сума - числа",
             reply_markup=build_goals_keyboard()
         )
-        return GOAL_MENU
+        return "WAITING_DEPOSIT"
     except Exception as e:
-        logger.error(f"Помилка при додаванні до цілі: {e}")
+        logger.error(f"Помилка при внесенні коштів: {e}")
         await update.message.reply_text(
-            "❌ Сталася помилка при додаванні коштів",
+            "❌ Сталася помилка при внесенні коштів",
             reply_markup=build_goals_keyboard()
         )
-        return GOAL_MENU
+        return "WAITING_DEPOSIT"
     finally:
         session.close()
 
-# Оновлено для використання ORM:
 async def goal_delete_prompt(update: Update, context: CallbackContext):
     await update.message.reply_text(
         "❌ Введіть ID цілі для видалення:\n"
@@ -753,7 +739,6 @@ async def goal_delete_prompt(update: Update, context: CallbackContext):
     )
     return "WAITING_GOAL_DELETE"
 
-# Оновлено для використання ORM:
 async def goal_delete(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     session = DBSession()
@@ -795,12 +780,10 @@ async def goal_delete(update: Update, context: CallbackContext):
     finally:
         session.close()
 
-# Оновлено для використання ORM:
 async def handle_analytics(update: Update, context: CallbackContext):
     user_id = update.effective_user.id
     try:
-        # Отримуємо всі транзакції для повного аналізу
-        all_transactions = await db_transactions.get_transactions(user_id, limit=99999) # Великий ліміт для всіх
+        all_transactions = await db_transactions.get_transactions(user_id, limit=99999)
 
         if not all_transactions:
             await update.message.reply_text(
@@ -809,22 +792,24 @@ async def handle_analytics(update: Update, context: CallbackContext):
             )
             return ConversationHandler.END
 
-        # Розрахунок загального балансу за допомогою функції
         current_balance = await db_transactions.get_balance(user_id)
 
-        # Статистика витрат за категоріями (за весь період або за обраний)
         spending_by_category = {}
+        income_by_category = {}
         for t in all_transactions:
-            if t.type == 'expense': # Тільки витрати для аналітики витрат
+            if t.type == 'expense':
                 spending_by_category[t.category] = spending_by_category.get(t.category, 0.0) + t.amount
+            elif t.type == 'income':
+                income_by_category[t.category] = income_by_category.get(t.category, 0.0) + t.amount
 
-        sorted_categories = sorted(spending_by_category.items(), key=lambda item: item[1], reverse=True)
+        sorted_expense_categories = sorted(spending_by_category.items(), key=lambda item: item[1], reverse=True)
+        sorted_income_categories = sorted(income_by_category.items(), key=lambda item: item[1], reverse=True)
         total_overall_expense = sum(spending_by_category.values())
+        total_overall_income = sum(income_by_category.values())
 
-        # Розрахунок середньомісячних витрат
-        months_data = {} # { "YYYY-MM": total_expense_for_month }
+        months_data = {}
         for t in all_transactions:
-            if t.type == 'expense' and t.date: # Перевірка t.date на наявність, якщо це об'єкт datetime
+            if t.type == 'expense' and t.date:
                 month_key = t.date.strftime('%Y-%m')
                 months_data[month_key] = months_data.get(month_key, 0.0) + t.amount
         
@@ -832,12 +817,19 @@ async def handle_analytics(update: Update, context: CallbackContext):
 
         response = "📊 <b>Фінансова аналітика</b>\n\n"
         response += f"💰 <b>Поточний баланс:</b> {current_balance:.2f} грн\n"
-        response += f"⬇️ <b>Загальні витрати (за весь час):</b> {total_overall_expense:.2f} грн\n"
+        response += f"⬆️ <b>Загальні доходи:</b> {total_overall_income:.2f} грн\n"
+        response += f"⬇️ <b>Загальні витрати:</b> {total_overall_expense:.2f} грн\n"
         response += f"📆 <b>Середньомісячні витрати:</b> {avg_monthly_expense:.2f} грн\n\n"
         
-        if sorted_categories:
-            response += "<b>Топ категорій витрат (за весь час):</b>\n"
-            for i, (category, amount) in enumerate(sorted_categories, 1):
+        if sorted_income_categories:
+            response += "<b>Топ категорій доходів:</b>\n"
+            for i, (category, amount) in enumerate(sorted_income_categories, 1):
+                response += f"{i}. {category.capitalize()}: {amount:.2f} грн\n"
+            response += "\n"
+        
+        if sorted_expense_categories:
+            response += "<b>Топ категорій витрат:</b>\n"
+            for i, (category, amount) in enumerate(sorted_expense_categories, 1):
                 response += f"{i}. {category.capitalize()}: {amount:.2f} грн\n"
         else:
             response += "Немає даних про витрати за категоріями.\n"
@@ -855,43 +847,12 @@ async def handle_analytics(update: Update, context: CallbackContext):
             reply_markup=build_main_keyboard()
         )
 
-
 def setup_handlers(application: Application):
-    # Основні команди
     application.add_handler(CommandHandler("start", cmd_start))
     application.add_handler(CommandHandler("help", cmd_help))
-    
-    # Обробники кнопок головного меню
     application.add_handler(MessageHandler(filters.Text(["📊 Аналіз"]), handle_analytics))
     
-    settings_handler = ConversationHandler(
-        entry_points=[MessageHandler(filters.Text(["⚙ Налаштування"]), settings.handle_settings)],
-        states={
-            settings.SETTINGS_MENU: [
-                MessageHandler(filters.Text(["💱 Змінити валюту"]), settings.change_currency_start),
-                MessageHandler(filters.Text(["🔔 Сповіщення"]), settings.notification_settings),
-                MessageHandler(filters.Text(["📤 Експорт даних"]), settings.data_export),
-                MessageHandler(filters.Text(["🔙 На головну"]), settings.cancel_settings)
-            ],
-            settings.CHANGE_CURRENCY: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, settings.change_currency)
-            ],
-            settings.NOTIFICATION_SETTINGS: [
-                MessageHandler(filters.Text(["🔙 На головну"]), settings.cancel_settings)
-            ],
-            settings.DATA_EXPORT: [
-                MessageHandler(filters.Text(["🔙 На головну"]), settings.cancel_settings)
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", settings.cancel_settings),
-            MessageHandler(filters.Text(["🔙 На головну"]), settings.cancel_settings)
-        ]
-    )
-    application.add_handler(settings_handler)
-    
-    
-    # Додано ConversationHandler для "➕ Транзакція"
+    # Обробник для звичайних транзакцій (доходи та витрати)
     transaction_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Text(["➕ Транзакція"]), handle_transaction_start)],
         states={
@@ -914,8 +875,28 @@ def setup_handlers(application: Application):
         ]
     )
     application.add_handler(transaction_handler)
+    
+    # Новий обробник для швидкого додавання доходу
+    income_handler = ConversationHandler(
+        entry_points=[MessageHandler(filters.Text(["💵 Дохід"]), income_start)],
+        states={
+            ADD_INCOME_AMOUNT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_income_amount)
+            ],
+            ADD_INCOME_CATEGORY: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_income_category)
+            ],
+            ADD_INCOME_DESCRIPTION: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, get_income_description)
+            ]
+        },
+        fallbacks=[
+            CommandHandler("cancel", cancel_conversation),
+            MessageHandler(filters.Text(["❌ Скасувати", "🔙 На головну"]), cancel_conversation)
+        ]
+    )
+    application.add_handler(income_handler)
 
-    # Обробник цілей
     goals_handler = ConversationHandler(
         entry_points=[MessageHandler(filters.Text(["🎯 Цілі"]), handle_goals)],
         states={
@@ -929,8 +910,9 @@ def setup_handlers(application: Application):
             "WAITING_GOAL_CREATE": [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, goal_create)
             ],
-            "WAITING_GOAL_ADD": [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, goal_add)
+            "WAITING_DEPOSIT": [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_deposit),
+                CommandHandler("list", goal_list)
             ],
             "WAITING_GOAL_DELETE": [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, goal_delete)
@@ -943,7 +925,6 @@ def setup_handlers(application: Application):
     )
     application.add_handler(goals_handler)
     
-    # Обробник бюджету
     budget_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Text(["💰 Бюджет"]), budget_start),
@@ -971,7 +952,6 @@ def setup_handlers(application: Application):
     )
     application.add_handler(budget_handler)
     
-    # Обробник AI
     ai_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Text(["🤖 AI Поради"]), handle_ai_advice),
@@ -979,7 +959,6 @@ def setup_handlers(application: Application):
         ],
         states={
             AI_SESSION: [
-                # Use a lambda to pass the required arguments to ai.handle_ai_question
                 MessageHandler(
                     filters.TEXT & ~filters.Text(["❌ Скасувати"]),
                     lambda update, context: ai.handle_ai_question(
